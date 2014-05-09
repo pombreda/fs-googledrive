@@ -1,7 +1,0 @@
-fs==0.5.0
-google-api-python-client==1.2
-httplib2==0.8
-six==1.6.1
-pytest
-coverage
-coveralls
