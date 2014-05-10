@@ -11,8 +11,7 @@ tests_require = [
 
 install_requires = [
     'fs',
-    'google-api-python-client',
-    'httplib2'
+    'PyDrive'
 ]
 
 

@@ -3,15 +3,16 @@ from __future__ import print_function, division, absolute_import, unicode_litera
 from apiclient.http import MediaIoBaseUpload
 
 from fs.base import FS
-from fs.errors import UnsupportedError
-from fs.path import basename
+from fs.path import PathMap, basename, pathjoin
 import io
 
 
 class GoogleDriveFS(FS):
     """A filesystem implementation that stores the files in GoogleDrive"""
 
-    _meta = {'thread_safe': True,
+    _fields = "items(createdDate,fileExtension,fileSize,id,modifiedDate,originalFilename,title)"
+    _ids = PathMap()
+    _meta = {'thread_safe': False,
              'virtual': False,
              'read_only': False,
              'case_insensitive_paths': True,
@@ -20,11 +21,40 @@ class GoogleDriveFS(FS):
              'atomic.makedir': True,
              'atomic.rename': True,
              'mime_type': 'virtual/googledrive',
-    }
+             }
 
     def __init__(self, client, **kwargs):
         super(GoogleDriveFS, self).__init__(**kwargs)
         self.client = client
+
+    def _map_ids_to_paths(self):
+        entries = self.client.ListFile({"q": "trashed=false",
+                                       "fields": "items(title,id,parents(id,isRoot))"}
+                                       ).GetList()
+
+        def get_children(id):
+            if not id:
+                for entry in entries:
+                    for parent in entry["parents"]:
+                        if parent["isRoot"]:
+                            yield entry
+            else:
+                for entry in entries:
+                    for parent in entry["parents"]:
+                        if parent["id"] == id:
+                            yield entry
+
+        def build_recursive(path, parent_id):
+            for child in get_children(parent_id):
+                if not child["title"]:
+                    continue
+
+                child_path = pathjoin(path, child["title"])
+                print(child_path)
+                self._ids[path] = child["id"]
+                build_recursive(child_path, child["id"])
+
+        build_recursive("/", None)
 
     def open(self, path, mode='r', **kwargs):
         """
@@ -40,3 +70,28 @@ class GoogleDriveFS(FS):
         }
         remote_file = self.client.files().insert(body=body, media_body=media_body).execute()
         return remote_file
+
+    def listdir(self, path="/", wildcard=None, full=False, absolute=False, dirs_only=False,
+                files_only=False):
+        pass
+
+    def isdir(self, path):
+        pass
+
+    def isfile(self, path):
+        pass
+
+    def makedir(self, path, recursive=False, allow_recreate=False):
+        pass
+
+    def remove(self, path):
+        pass
+
+    def removedir(self, path, recursive=False, force=False):
+        pass
+
+    def rename(self, src, dst):
+        pass
+
+    def getinfo(self, path):
+        pass
