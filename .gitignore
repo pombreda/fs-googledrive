@@ -6,6 +6,7 @@
 # Packages
 *.egg
 *.egg-info
+*.cache
 dist
 build
 eggs
@@ -33,4 +34,8 @@ nosetests.xml
 # Mr Developer
 .mr.developer.cfg
 .project
+.ropeproject
+*.swp
+*.swo
+*.swn
 .pydevproject

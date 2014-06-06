@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-from __future__ import print_function, division, absolute_import, unicode_literals
+from __future__ import (print_function, division,
+                        absolute_import, unicode_literals)
 from datetime import datetime
 import unittest
 
+from mock import Mock
 from pytest import fixture
 
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
-
 
 from fs.tests import FSTestCases
 
@@ -15,15 +16,16 @@ from googledrivefs import GoogleDriveFS
 
 client_config = {
     'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
-    'client_id': '105537897616-oqt2bc3ffgi3l2bd07o1s3feq68ga5m7.apps.googleusercontent.com',
+    'client_id': '105537897616-oqt2bc3ffgi3l2bd07o1s3feq68ga5m7'
+                 '.apps.googleusercontent.com',
     'client_secret': 'sC6ZXdmHf_qXR0bQ0XaLvfSp',
     'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
     'revoke_uri': None,
-    'token_uri': 'https://accounts.google.com/o/oauth2/token'
-    }
+    'token_uri': 'https://accounts.google.com/o/oauth2/token'}
 
 
 class TestGoogleDriveFS():
+
     @fixture
     def fs(self):
         gauth = GoogleAuth()
@@ -33,12 +35,29 @@ class TestGoogleDriveFS():
         return GoogleDriveFS(drive)
 
     def test_map_ids_to_paths(self, fs):
-        #import ipdb; ipdb.set_trace()
-        fs._map_ids_to_paths()
-        print(list(fs._ids.iternames()))
-        print(list(fs._ids.itervalues()))
-        print(list(fs._ids.keys()))
-        assert False
+        # Arrange
+        file_list = [
+            {'parents': [{'id': '0B_lkT', 'isRoot': True}],
+             'id': '1APq7o', 'title': 'file_at_root.txt'},
+            {'parents': [{'id': '0B_lkT', 'isRoot': True}],
+             'id': '1xp13X', 'title': 'folder_at_root'},
+            {'parents': [{'id': '1xp13X', 'isRoot': False}],
+             'id': '13PuVd', 'title': 'file1_in_folder.txt'},
+            {'parents': [{'id': '1xp13X', 'isRoot': False}],
+             'id': '1ovGwK', 'title': 'file2_in_folder.txt'},
+            {'parents': [{'id': '1xp13X', 'isRoot': False}],
+             'id': '0Ap6n5', 'title': 'folder_in_folder'},
+        ]
+        fs.client.ListFile = Mock()
+        fs.client.ListFile.return_value.GetList.return_value = file_list
+        # Act
+        ids = fs._map_ids_to_paths()
+        # Assert
+        assert ids['/file_at_root.txt'] == '1APq7o'
+        assert ids['/folder_at_root'] == '1xp13X'
+        assert ids['/folder_at_root/file1_in_folder.txt'] == '13PuVd'
+        assert ids['/folder_at_root/file2_in_folder.txt'] == '1ovGwK'
+        assert ids['/folder_at_root/folder_in_folder'] == '0Ap6n5'
 
     def cleanup_googledrive(fs):
         """Remove all files and folders from Google Drive"""
