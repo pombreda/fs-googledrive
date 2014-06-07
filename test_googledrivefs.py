@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import (print_function, division,
                         absolute_import, unicode_literals)
-from datetime import datetime
 import unittest
-
 from mock import Mock
 from pytest import fixture
 
+from oauth2client.client  import OAuth2Credentials
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
@@ -23,12 +22,14 @@ client_config = {
     'revoke_uri': None,
     'token_uri': 'https://accounts.google.com/o/oauth2/token'}
 
+credentials = '{"_module": "oauth2client.client", "token_expiry": "2014-06-07T17:04:26Z", "access_token": "ya29.KgBLjqMlBwNydhoAAACKi7Trb4b3VyN4LZX5JHHTz9wdUeAOqupcFn65q9p0kA", "token_uri": "https://accounts.google.com/o/oauth2/token", "invalid": false, "token_response": {"access_token": "ya29.KgBLjqMlBwNydhoAAACKi7Trb4b3VyN4LZX5JHHTz9wdUeAOqupcFn65q9p0kA", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "1/1Ani7Ovt_KmBPaQxbyc4ZGvhTHMNu4gwVdPiBR8_8BQ"}, "client_id": "105537897616-oqt2bc3ffgi3l2bd07o1s3feq68ga5m7.apps.googleusercontent.com", "id_token": null, "client_secret": "sC6ZXdmHf_qXR0bQ0XaLvfSp", "revoke_uri": "https://accounts.google.com/o/oauth2/revoke", "_class": "OAuth2Credentials", "refresh_token": "1/1Ani7Ovt_KmBPaQxbyc4ZGvhTHMNu4gwVdPiBR8_8BQ", "user_agent": null}'
 
 class TestGoogleDriveFS():
 
     @fixture
     def fs(self):
         gauth = GoogleAuth()
+        gauth.credentials = OAuth2Credentials.from_json(credentials)
         gauth.client_config = client_config
         gauth.settings["client_config_backend"] = "settings"
         drive = GoogleDrive(gauth)
