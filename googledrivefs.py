@@ -1,17 +1,39 @@
 # -*- coding: utf-8 -*-
 from __future__ import (print_function, division,
                         absolute_import, unicode_literals)
-from apiclient.http import MediaIoBaseUpload
 
+from fs.errors import (ResourceInvalidError, ResourceNotFoundError,
+                       ParentDirectoryMissingError, DestinationExistsError,
+                       DirectoryNotEmptyError)
+from fs.remote import RemoteFileBuffer
 from fs.base import FS
-from fs.path import PathMap, basename, pathjoin
-import io
+from fs.path import PathMap, basename, pathjoin, dirname, isprefix
+from fs.opener import Opener
+
+
+class GoogleDriveOpener(Opener):
+    names = ['gdrive']
+    desc = """An opener for Google Drive.
+    Example (authenticate with Google Drive with username and OAUTH):
+    * gdrive://user@drive.google.com/path/to/folder"""
+
+    @classmethod
+    def get_fs(cls, registry, fs_name, fs_name_params,
+               fs_path, writeable, create_dir):
+        username, password, fs_path = cls._parse_credentials(fs_path)
+        fs_path = fs_path.replace("drive.google.com")
+        gdrivefs = cls.authenticate(username)
+
+        if create_dir:
+            gdrivefs.makedir(fs_path, recursive=True)
+
+        return gdrivefs, fs_path
 
 
 class GoogleDriveFS(FS):
 
     """A filesystem implementation that stores the files in GoogleDrive"""
-
+    _folder_mimetype = 'application/vnd.google-apps.folder'
     _fields = "items(createdDate,fileExtension,fileSize,id,modifiedDate,"\
               "originalFilename,title)"
     _meta = {'thread_safe': False,
@@ -35,15 +57,16 @@ class GoogleDriveFS(FS):
         ids because GoogleDrive does not have a concept of file paths.
         """
         ids = PathMap()
+        ids['/'] = 'root'
         entries = self.client.ListFile({"q": "trashed=false",
-                                        "fields": "items(title,id,parents(id,isRoot))"
-                                       }).GetList()
+                                        "fields": "items(title,id,"
+                                        "parents(id,isRoot))"}).GetList()
 
         def get_children(parent_id):
             for entry in entries:
                 for parent in entry["parents"]:
                     if parent["id"] == parent_id or \
-                      (parent["isRoot"] and not parent_id):
+                       (parent["isRoot"] and not parent_id):
                         yield entry
 
         def build_map_recursive(path, parent_id):
@@ -58,50 +81,201 @@ class GoogleDriveFS(FS):
         build_map_recursive("/", None)
         return ids
 
-    def open(self, path, mode='r', **kwargs):
-        """
-        Open a the given path as a file-like object.
-        """
-        mime_type = "virtual/googledrive"
-        local_file = io.BytesIO(b"...Some data to upload...")
-        media_body = MediaIoBaseUpload(local_file, mime_type)
-        body = {
-            "title": basename(path),
-            "description": path,
-            "mimeType": mime_type
-        }
-        remote_file = self.client.files() \
-                          .insert(body=body, media_body=media_body) \
-                          .execute()
-        return remote_file
+    def open(self, path, mode='r', buffering=-1, encoding=None, errors=None,
+             newline=None, line_buffering=False, **kwargs):
+        if self.isdir(path):
+            raise ResourceInvalidError(path)
+        if 'w' in mode and not self.isdir(dirname(path)):
+            raise ParentDirectoryMissingError(path)
+        if 'r' in mode and not self.isfile(path):
+            raise ResourceNotFoundError(path)
+            if not self.isdir(dirname(path)):
+                raise ParentDirectoryMissingError(path)
 
-    def listdir(
-            self,
-            path="/",
-            wildcard=None,
-            full=False,
-            absolute=False,
-            dirs_only=False,
-            files_only=False):
-        pass
+        rf = self.getcontents(path, mode=mode, encoding=encoding,
+                              errors=errors, newline=newline)
+        return RemoteFileBuffer(self, path, mode=mode, rfile=rf)
+
+    def getcontents(self, path, mode='rb', encoding=None,
+                    errors=None, newline=None):
+        if self.isdir(path):
+            raise ResourceInvalidError(path)
+        if not self.isfile(path):
+            if not self.isdir(dirname(path)):
+                raise ParentDirectoryMissingError(path)
+            raise ResourceNotFoundError(path)
+
+        fh = self.client.CreateFile({'id': self._ids[path]})
+        return fh.GetContentString()
+
+    def setcontents(self, path, data='', encoding=None,
+                    errors=None, chunk_size=65536):
+        if self.isdir(path):
+            raise ResourceInvalidError(path)
+        if self.isfile(path):
+            fh = self.client.CreateFile({'id': self._ids[path]})
+            fh.SetContentString(data)
+            fh.Upload()
+        else:
+            parent_path = self._ids[dirname(path)]
+            fh = self.client.CreateFile({'title': basename(path),
+                                         'parents': [{'id': parent_path}]})
+            fh.SetContentString(data)
+            fh.Upload()
+            self._ids[path] = fh['id']
+
+    def listdir(self, path="/", wildcard=None, full=False, absolute=False,
+                dirs_only=False, files_only=False):
+        if self.isfile(path):
+            raise ResourceInvalidError(path)
+        if not self.isdir(path):
+            if not self.isdir(dirname(path)):
+                raise ParentDirectoryMissingError(path)
+            raise ResourceNotFoundError(path)
+
+        query = "'{0}' in parents and trashed=false"\
+                .format(self._ids[dirname(path)])
+
+        if dirs_only:
+            query += " and mimeType = '{0}'".format(self._folder_mimetype)
+        if files_only:
+            query += " and mimeType != '{0}'".format(self._folder_mimetype)
+        self._ids = self._map_ids_to_paths()
+        entries = self._ids.names(path)
+        # entries = self.client.ListFile({"q": query,
+        #                                "fields": "items(title,id,"
+        #                                "parents(id,isRoot))"}).GetList()
+        # We don't want the _listdir_helper to perform dirs_only
+        # and files_only filtering again
+        return self._listdir_helper(path, entries, wildcard=wildcard,
+                                    full=full, absolute=absolute,
+                                    dirs_only=dirs_only,
+                                    files_only=files_only)
 
     def isdir(self, path):
-        pass
+        try:
+            fh = self.client.CreateFile({'id': self._ids[path]})
+            return fh['mimeType'] == self._folder_mimetype
+        except KeyError:
+            return False
 
     def isfile(self, path):
-        pass
+        try:
+            fh = self.client.CreateFile({'id': self._ids[path]})
+            return fh['mimeType'] != self._folder_mimetype
+        except KeyError:
+            return False
 
     def makedir(self, path, recursive=False, allow_recreate=False):
-        pass
+        """Creates a file with mimeType _folder_mimetype
+        which acts as a folder in GoogleDrive."""
+        if self.isdir(path):
+            if allow_recreate:
+                return
+            else:
+                raise DestinationExistsError(path)
+        if self.isfile(path):
+            raise ResourceInvalidError(path)
+        if not recursive and not self.isdir(dirname(path)):
+            raise ParentDirectoryMissingError(path)
+
+        if recursive:
+            self.makedir(dirname(path), recursive=recursive,
+                         allow_recreate=True)
+
+        parent_id = self._ids[dirname(path)]
+        fh = self.client.CreateFile({'title': basename(path),
+                                     'mimeType': self._folder_mimetype,
+                                     'parents': [{'id': parent_id}]})
+        fh.Upload()
+        self._ids[path] = fh['id']
 
     def remove(self, path):
-        pass
+        if self.isdir(path):
+            raise ResourceInvalidError(path)
+        if not self.isfile(path):
+            if not self.isdir(dirname(path)):
+                raise ParentDirectoryMissingError(path)
+            raise ResourceNotFoundError(path)
+
+        self.client.service.files().delete(fileId=self._ids[path]).execute()
+        self._ids.pop(path)
 
     def removedir(self, path, recursive=False, force=False):
-        pass
+        if self.isfile(path):
+            raise ResourceInvalidError(path)
+        if not self.isdir(path):
+            if not self.isdir(dirname(path)):
+                raise ParentDirectoryMissingError(path)
+            raise ResourceNotFoundError(path)
+
+        if force:
+            for child_path in self.listdir(path, dirs_only=True):
+                self.removedir(child_path, force=force)
+            for child_path in self.listdir(path, files_only=True):
+                self.remove(child_path)
+        elif len(self.listdir(path)) > 0:
+            raise DirectoryNotEmptyError(path)
+
+        self.client.service.files().delete(fileId=self._ids[path]).execute()
+        self._ids.pop(path)
+
+        if recursive and len(self.listdir(dirname(path))) == 0:
+            self.removedir(dirname(path), recursive=recursive)
 
     def rename(self, src, dst):
-        pass
+        if self.isdir(src):
+            raise ResourceInvalidError(src)
+        if isprefix(src, dst):
+            raise ResourceInvalidError(dst)
+        if not self.isfile(src):
+            if not self.isdir(dirname(src)):
+                raise ParentDirectoryMissingError(src)
+            raise ResourceNotFoundError(src)
+
+        fh = self.client.CreateFile({'id': self._ids[src],
+                                     'title': basename(src)})
+        fh.Upload()
+        self._ids[dst] = self._ids.pop(src)
+
+    def copy(self, src, dst, overwrite=False, chunk_size=65536):
+        if self.isdir(src):
+            raise ResourceInvalidError(src)
+        if not self.isfile(src):
+            if not self.isdir(dirname(src)):
+                raise ParentDirectoryMissingError(src)
+            raise ResourceNotFoundError(src)
+
+        if self.isdir(dst):
+            raise ResourceInvalidError(dst)
+        if self.isfile(dst):
+            if overwrite:
+                self.remove(dst)
+            else:
+                raise DestinationExistsError(dst)
+        else:
+            if not self.isdir(dirname(dst)):
+                raise ParentDirectoryMissingError(dst)
+
+        parent_path = self._ids[dirname(dst)]
+        copied_fh = {'title': basename(dst), 'parents': [{'id': parent_path}]}
+        copied_fh = self.client.auth.files().copy(fileId=self._ids[src],
+                                                  body=copied_fh)
+        self._ids[dst] = copied_fh['id']
 
     def getinfo(self, path):
-        pass
+        if self.isdir(path):
+            raise ResourceInvalidError(path)
+        if not self.isfile(path):
+            if not self.isdir(dirname(path)):
+                raise ParentDirectoryMissingError(path)
+            raise ResourceNotFoundError(path)
+
+        fh = self.client.CreateFile({'id': self._ids[path],
+                                     'title': basename(path)})
+        return {
+            'size': fh['fileSize'],
+            'created_time': fh['createdDate'],
+            'acessed_time': fh['lastViewedByMeDate'],
+            'modified_time': fh['modifiedDate']
+        }

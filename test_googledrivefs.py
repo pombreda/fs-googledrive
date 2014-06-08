@@ -5,7 +5,7 @@ import unittest
 from mock import Mock
 from pytest import fixture
 
-from oauth2client.client  import OAuth2Credentials
+from oauth2client.client import OAuth2Credentials
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
@@ -23,6 +23,15 @@ client_config = {
     'token_uri': 'https://accounts.google.com/o/oauth2/token'}
 
 credentials = '{"_module": "oauth2client.client", "token_expiry": "2014-06-07T17:04:26Z", "access_token": "ya29.KgBLjqMlBwNydhoAAACKi7Trb4b3VyN4LZX5JHHTz9wdUeAOqupcFn65q9p0kA", "token_uri": "https://accounts.google.com/o/oauth2/token", "invalid": false, "token_response": {"access_token": "ya29.KgBLjqMlBwNydhoAAACKi7Trb4b3VyN4LZX5JHHTz9wdUeAOqupcFn65q9p0kA", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "1/1Ani7Ovt_KmBPaQxbyc4ZGvhTHMNu4gwVdPiBR8_8BQ"}, "client_id": "105537897616-oqt2bc3ffgi3l2bd07o1s3feq68ga5m7.apps.googleusercontent.com", "id_token": null, "client_secret": "sC6ZXdmHf_qXR0bQ0XaLvfSp", "revoke_uri": "https://accounts.google.com/o/oauth2/revoke", "_class": "OAuth2Credentials", "refresh_token": "1/1Ani7Ovt_KmBPaQxbyc4ZGvhTHMNu4gwVdPiBR8_8BQ", "user_agent": null}'
+
+
+def cleanup_googledrive(fs):
+    """Remove all files and folders from Google Drive"""
+    for entry in fs.listdir(files_only=True):
+        fs.remove(entry)
+    for entry in fs.listdir(dirs_only=True):
+        fs.removedir(entry, force=True)
+
 
 class TestGoogleDriveFS():
 
@@ -60,24 +69,18 @@ class TestGoogleDriveFS():
         assert ids['/folder_at_root/file2_in_folder.txt'] == '1ovGwK'
         assert ids['/folder_at_root/folder_in_folder'] == '0Ap6n5'
 
-    def cleanup_googledrive(fs):
-        """Remove all files and folders from Google Drive"""
-        for entry in fs.listdir(files_only=True):
-            fs.remove(entry)
-        for entry in fs.listdir(dirs_only=True):
-            fs.removedir(entry, force=True)
 
+class TestExternalGoogleDriveFS(unittest.TestCase, FSTestCases):
+    """This will test the GoogleDriveFS implementation against the
+    base tests defined in PyFilesystem"""
+    def setUp(self):
+        gauth = GoogleAuth()
+        gauth.credentials = OAuth2Credentials.from_json(credentials)
+        gauth.client_config = client_config
+        gauth.settings["client_config_backend"] = "settings"
+        drive = GoogleDrive(gauth)
+        self.fs = GoogleDriveFS(drive)
 
-# class TestExternalGoogleDriveFS(unittest.TestCase, FSTestCases):
-#     """This will test the GoogleDriveFS implementation against the
-#     base tests defined in PyFilesystem"""
-#     def setUp(self):
-#         gauth = GoogleAuth()
-#         gauth.client_config = client_config
-#         gauth.settings["client_config_backend"] = "settings"
-#         drive = GoogleDrive(gauth)
-#         self.fs = GoogleDriveFS(drive)
-
-#     def tearDown(self):
-#         cleanup_googledrive(self.fs)
-#         self.fs.close()
+    def tearDown(self):
+        cleanup_googledrive(self.fs)
+        self.fs.close()
