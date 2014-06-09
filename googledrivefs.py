@@ -4,10 +4,11 @@ from __future__ import (print_function, division,
 
 from fs.errors import (ResourceInvalidError, ResourceNotFoundError,
                        ParentDirectoryMissingError, DestinationExistsError,
-                       DirectoryNotEmptyError)
+                       DirectoryNotEmptyError, RemoveRootError)
+from fs.filelike import StringIO
 from fs.remote import RemoteFileBuffer
 from fs.base import FS
-from fs.path import PathMap, basename, pathjoin, dirname, isprefix
+from fs.path import PathMap, basename, pathjoin, dirname, isprefix, abspath
 from fs.opener import Opener
 
 
@@ -91,10 +92,15 @@ class GoogleDriveFS(FS):
             raise ResourceNotFoundError(path)
             if not self.isdir(dirname(path)):
                 raise ParentDirectoryMissingError(path)
+        if 'w' in mode and '+' not in mode and self.isfile(path):
+            self.remove(path)
 
-        rf = self.getcontents(path, mode=mode, encoding=encoding,
-                              errors=errors, newline=newline)
-        return RemoteFileBuffer(self, path, mode=mode, rfile=rf)
+        data = ''
+        if 'r' in mode:
+            data = self.getcontents(path, mode=mode, encoding=encoding,
+                                    errors=errors, newline=newline)
+        rfile = StringIO(data=data, mode=mode)
+        return RemoteFileBuffer(self, path, mode=mode, rfile=rfile)
 
     def getcontents(self, path, mode='rb', encoding=None,
                     errors=None, newline=None):
@@ -112,6 +118,10 @@ class GoogleDriveFS(FS):
                     errors=None, chunk_size=65536):
         if self.isdir(path):
             raise ResourceInvalidError(path)
+
+        if hasattr(data, 'read'):
+            data = data.read()
+
         if self.isfile(path):
             fh = self.client.CreateFile({'id': self._ids[path]})
             fh.SetContentString(data)
@@ -198,7 +208,9 @@ class GoogleDriveFS(FS):
                 raise ParentDirectoryMissingError(path)
             raise ResourceNotFoundError(path)
 
-        self.client.service.files().delete(fileId=self._ids[path]).execute()
+        self.client.auth.service.files() \
+                                .delete(fileId=self._ids[path]) \
+                                .execute()
         self._ids.pop(path)
 
     def removedir(self, path, recursive=False, force=False):
@@ -208,33 +220,34 @@ class GoogleDriveFS(FS):
             if not self.isdir(dirname(path)):
                 raise ParentDirectoryMissingError(path)
             raise ResourceNotFoundError(path)
-
+        if abspath(path) == "/":
+            raise RemoveRootError(path)
         if force:
-            for child_path in self.listdir(path, dirs_only=True):
+            for child_path in self.listdir(path, full=True, dirs_only=True):
                 self.removedir(child_path, force=force)
-            for child_path in self.listdir(path, files_only=True):
+            for child_path in self.listdir(path, full=True, files_only=True):
                 self.remove(child_path)
         elif len(self.listdir(path)) > 0:
             raise DirectoryNotEmptyError(path)
 
-        self.client.service.files().delete(fileId=self._ids[path]).execute()
+        self.client.auth.service.files() \
+                                .delete(fileId=self._ids[path]) \
+                                .execute()
         self._ids.pop(path)
 
         if recursive and len(self.listdir(dirname(path))) == 0:
             self.removedir(dirname(path), recursive=recursive)
 
     def rename(self, src, dst):
-        if self.isdir(src):
-            raise ResourceInvalidError(src)
+        if not self.exists(src):
+            raise ResourceNotFoundError(src)
+        if self.exists(dst):
+            raise DestinationExistsError(dst)
         if isprefix(src, dst):
             raise ResourceInvalidError(dst)
-        if not self.isfile(src):
-            if not self.isdir(dirname(src)):
-                raise ParentDirectoryMissingError(src)
-            raise ResourceNotFoundError(src)
 
         fh = self.client.CreateFile({'id': self._ids[src],
-                                     'title': basename(src)})
+                                     'title': basename(dst)})
         fh.Upload()
         self._ids[dst] = self._ids.pop(src)
 
@@ -258,10 +271,11 @@ class GoogleDriveFS(FS):
                 raise ParentDirectoryMissingError(dst)
 
         parent_path = self._ids[dirname(dst)]
-        copied_fh = {'title': basename(dst), 'parents': [{'id': parent_path}]}
-        copied_fh = self.client.auth.files().copy(fileId=self._ids[src],
-                                                  body=copied_fh)
-        self._ids[dst] = copied_fh['id']
+        copy_fh = {'title': basename(dst), 'parents': [{'id': parent_path}]}
+        copy_fh = self.client.auth.service.files() \
+                                  .copy(fileId=self._ids[src], body=copy_fh) \
+                                  .execute()
+        self._ids[dst] = copy_fh['id']
 
     def getinfo(self, path):
         if self.isdir(path):
@@ -274,7 +288,7 @@ class GoogleDriveFS(FS):
         fh = self.client.CreateFile({'id': self._ids[path],
                                      'title': basename(path)})
         return {
-            'size': fh['fileSize'],
+            'size': int(fh['fileSize']),
             'created_time': fh['createdDate'],
             'acessed_time': fh['lastViewedByMeDate'],
             'modified_time': fh['modifiedDate']

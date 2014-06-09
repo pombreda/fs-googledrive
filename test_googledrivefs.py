@@ -31,7 +31,7 @@ def cleanup_googledrive(fs):
         fs.remove(entry)
     for entry in fs.listdir(dirs_only=True):
         fs.removedir(entry, force=True)
-
+    fs.client.auth.service.files().emptyTrash().execute()
 
 class TestGoogleDriveFS():
 
